@@ -20,20 +20,50 @@
 // WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 // SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-package include
+package formatter
 
 import (
-	// input type
-	_ "github.com/elastic/beats/filebeat/input/log"
-	_ "github.com/elastic/beats/filebeat/input/stdin"
-	_ "github.com/elastic/beats/filebeat/input/syslog"
-	_ "github.com/elastic/beats/filebeat/input/udp"
-
-	_ "github.com/TencentBlueKing/bkunifylogbeat/task/input/wineventlog"
-
-	// input config
-	_ "github.com/TencentBlueKing/bkunifylogbeat/config/input"
-
-	// formatter
-	_ "github.com/TencentBlueKing/bkunifylogbeat/task/formatter"
+	"github.com/TencentBlueKing/bkunifylogbeat/config"
+	"github.com/elastic/beats/filebeat/input/file"
+	"github.com/elastic/beats/filebeat/util"
+	"github.com/elastic/beats/libbeat/beat"
+	"github.com/elastic/beats/libbeat/common"
+	"github.com/stretchr/testify/assert"
+	"testing"
+	"time"
 )
+
+func TestV2Formatter(t *testing.T) {
+	vars := map[string]interface{}{
+		"dataid":             "999990001",
+		"harvester_limit":    10,
+		"remove_path_prefix": "/data/bcs/docker/var/lib/docker/containers/f3616d188d0462018dc281373995c69765c2d91c39af60ee37501d65f28054ce",
+		"is_container_std":   true,
+	}
+	taskConfig, err := config.CreateTaskConfig(vars)
+	if err != nil {
+		panic(err)
+	}
+	f, err := NewV2Formatter(taskConfig)
+	if err != nil {
+		panic(err)
+	}
+
+	event := &util.Data{
+		Event: beat.Event{
+			Timestamp: time.Now(),
+			Fields: common.MapStr{
+				"data": `{"log":"Hello from the Kubernetes cluster\n","stream":"stdout","time":"2021-11-16T07:44:40.609753191Z"}`,
+			},
+		},
+	}
+	event.SetState(file.State{Source: "/data/bcs/docker/var/lib/docker/containers/f3616d188d0462018dc281373995c69765c2d91c39af60ee37501d65f28054ce/f3616d188d0462018dc281373995c69765c2d91c39af60ee37501d65f28054ce-json.log"})
+
+	f.Format([]*util.Data{event})
+
+	_, ok := event.Event.Fields["log_time"]
+	assert.Equal(t, true, ok)
+
+	_, ok = event.Event.Fields["stream"]
+	assert.Equal(t, true, ok)
+}

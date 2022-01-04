@@ -23,15 +23,9 @@ config_templates:
     file_path: etc/bkunifylogbeat
     format: yaml
     source_path: etc/bkunifylogbeat.conf.tpl
-  - plugin_version: "*"
-    name: bkunifylogbeat_winlog.conf
-    version: 1
-    file_path: etc/bkunifylogbeat
-    format: yaml
-    source_path: etc/bkunifylogbeat_winlog.conf.tpl
 control:
-  start: "start.bat bkunifylogbeat"
-  stop: "stop.bat bkunifylogbeat"
-  restart: "restart.bat bkunifylogbeat"
-  reload: "restart.bat bkunifylogbeat"
-  version: "bkunifylogbeat.exe -v"
+  start: "./start.ksh bkunifylogbeat"
+  stop: "./stop.ksh bkunifylogbeat"
+  restart: "./restart.ksh bkunifylogbeat"
+  reload: "./reload.ksh bkunifylogbeat"
+  version: "./bkunifylogbeat -v"

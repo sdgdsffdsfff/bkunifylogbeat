@@ -28,13 +28,15 @@ package task
 
 import (
 	"fmt"
+	"github.com/TencentBlueKing/bkunifylogbeat/utils"
+	"runtime"
 	"sync"
-
-	"github.com/elastic/beats/libbeat/logp"
+	"time"
 
 	cfg "github.com/TencentBlueKing/bkunifylogbeat/config"
 	"github.com/TencentBlueKing/collector-go-sdk/v2/bkbeat/beat"
 	"github.com/TencentBlueKing/collector-go-sdk/v2/bkbeat/bkmonitoring"
+	"github.com/TencentBlueKing/collector-go-sdk/v2/bkbeat/logp"
 	"github.com/elastic/beats/filebeat/channel"
 	"github.com/elastic/beats/filebeat/input"
 	"github.com/elastic/beats/filebeat/input/file"
@@ -52,14 +54,44 @@ var (
 	crawlerState     = bkmonitoring.NewInt("crawler_state")
 	crawlerSendTotal = bkmonitoring.NewInt("crawler_send_total")
 	crawlerDropped   = bkmonitoring.NewInt("crawler_dropped")
+
+	isEnableRateLimiter bool            // 是否开启速率限制
+	cpuLimiter          *utils.CPULimit // CPU使用率限制
 )
+
+func SetResourceLimit(maxCpuLimit, checkTimes int) {
+	numCPU := runtime.NumCPU()
+	// 在docker富容器中 并且 开启了速率限制
+	if utils.IsInDocker() {
+		logp.L.Infof("enable rate limit. because numOfCpu(%d) && isInDocker(%v)",
+			numCPU, true,
+		)
+
+		if maxCpuLimit > 0 && maxCpuLimit <= numCPU*100 {
+			cpuLimiter = utils.NewCPULimit(maxCpuLimit, checkTimes)
+			isEnableRateLimiter = true
+		} else {
+			logp.L.Infof("disable rate limit. because cpu limit config(%d) is not valid",
+				maxCpuLimit,
+			)
+		}
+	} else {
+		logp.L.Infof("disable rate limit. because numOfCpu(%d) && isInDocker(%v), "+
+			"cpu limit config(%d)",
+			numCPU, false, maxCpuLimit,
+		)
+		if cpuLimiter != nil {
+			cpuLimiter.Stop()
+		}
+		isEnableRateLimiter = false
+	}
+}
 
 // Task： 采集任务具体实现，负责filebeat采集事件处理、过滤、打包，并发送到采集框架
 type Task struct {
 	ID               string
 	config           *cfg.TaskConfig
 	beatDone         chan struct{}
-	states           []file.State
 	runner           *input.Runner
 	processors       *Processors
 	sender           *Sender
@@ -72,12 +104,11 @@ type Task struct {
 }
 
 // NewTask 生成采集任务实例
-func NewTask(config *cfg.TaskConfig, beatDone chan struct{}, states []file.State) *Task {
+func NewTask(config *cfg.TaskConfig, beatDone chan struct{}) *Task {
 	task := &Task{
 		ID:       config.ID,
 		config:   config,
 		beatDone: beatDone,
-		states:   states,
 		done:     make(chan struct{}),
 	}
 	task.crawlerReceived = bkmonitoring.NewIntWithDataID(config.DataID, "crawler_received")
@@ -88,7 +119,7 @@ func NewTask(config *cfg.TaskConfig, beatDone chan struct{}, states []file.State
 }
 
 // Start 负责启动采集任务实例
-func (task *Task) Start() error {
+func (task *Task) Start(lastStates []file.State) error {
 	var err error
 
 	// init sender
@@ -107,7 +138,7 @@ func (task *Task) Start() error {
 		return fmt.Errorf(": %s", err)
 	}
 	task.wg.Add(1)
-	p, err := input.New(task.config.RawConfig, ConnectToTask(task), task.beatDone, task.states, nil)
+	p, err := input.New(task.config.RawConfig, ConnectToTask(task), task.beatDone, lastStates, nil)
 	if err != nil {
 		inputFailed.Add(1)
 		return fmt.Errorf("[%s] error while initializing input: %s", task.ID, err)
@@ -148,7 +179,7 @@ func (task *Task) Done() <-chan struct{} {
 //处理input runner发送的事件
 func (task *Task) OnEvent(data *util.Data) bool {
 	if data == nil {
-		logp.Err("task get event nil, task_id:%s", task.ID)
+		logp.L.Errorf("task get event nil, task_id:%s", task.ID)
 		return false
 	}
 	event := &data.Event
@@ -168,6 +199,18 @@ func (task *Task) OnEvent(data *util.Data) bool {
 		task.crawlerState.Add(1)
 		crawlerState.Add(1)
 	} else {
+		// 处理速率限制，可在一定层度上限制CPU的使用率
+		if isEnableRateLimiter && cpuLimiter != nil {
+			checkInterval := cpuLimiter.GetCheckInterval()
+			for {
+				if cpuLimiter.Allow() {
+					break
+				} else {
+					time.Sleep(checkInterval)
+				}
+			}
+		}
+
 		event = task.processors.Run(event)
 		if event != nil {
 			//正常事件
